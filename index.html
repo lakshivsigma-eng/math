@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math Worksheet Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'kumon-math-gen';
+
+        let currentUser = null;
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) {
+                console.error("Auth error", err);
+            }
+        };
+
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                loadHistory();
+                document.getElementById('userStatus').innerText = `Parent Account ID: ${user.uid}`;
+            }
+        });
+
+        async function saveResultToCloud(level, topic, score, total) {
+            if (!currentUser) return;
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'users', currentUser.uid, 'history'), {
+                    level,
+                    topic,
+                    score,
+                    total,
+                    percentage: Math.round((score / total) * 100),
+                    timestamp: serverTimestamp()
+                });
+            } catch (err) {
+                console.error("Error saving result:", err);
+            }
+        }
+
+        function loadHistory() {
+            if (!currentUser) return;
+            const historyRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'history');
+            
+            onSnapshot(historyRef, (snapshot) => {
+                const historyList = document.getElementById('historyList');
+                historyList.innerHTML = "";
+                
+                const docs = [];
+                snapshot.forEach(doc => docs.push(doc.data()));
+                docs.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+
+                if (docs.length === 0) {
+                    historyList.innerHTML = `<p class="text-gray-400 text-sm italic">No history yet.</p>`;
+                    return;
+                }
+
+                docs.slice(0, 15).forEach(data => {
+                    const date = data.timestamp ? new Date(data.timestamp.seconds * 1000).toLocaleDateString() : '...';
+                    const div = document.createElement('div');
+                    div.className = "flex justify-between items-center p-2 border-b border-gray-50 text-sm";
+                    div.innerHTML = `
+                        <div class="flex flex-col">
+                            <span class="font-bold text-gray-700">Lvl ${data.level}: ${data.topic}</span>
+                            <span class="text-[9px] text-gray-400 uppercase tracking-tighter">${date}</span>
+                        </div>
+                        <span class="font-mono font-bold ${data.percentage >= 80 ? 'text-green-600' : 'text-orange-500'}">
+                            ${data.score}/${data.total}
+                        </span>
+                    `;
+                    historyList.appendChild(div);
+                });
+            }, (err) => console.error("Firestore error:", err));
+        }
+
+        window.saveResultToCloud = saveResultToCloud;
+    </script>
+    <style>
+        .worksheet-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            grid-template-rows: repeat(5, 1fr);
+            gap: 1.5rem;
+            height: 70%;
+        }
+        
+        .problem-item {
+            font-size: 1.25rem;
+            display: flex;
+            align-items: flex-start;
+            padding: 15px;
+            border: 1px dashed #eee;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .problem-num {
+            font-size: 0.8rem;
+            color: #666;
+            margin-right: 12px;
+            width: 30px;
+            font-weight: bold;
+        }
+
+        .problem-content {
+            flex-grow: 1;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .answer-input {
+            width: 140px;
+            border-bottom: 2px solid #000;
+            text-align: center;
+            outline: none;
+            font-weight: bold;
+            color: #1e40af;
+            background: transparent;
+            padding: 2px;
+        }
+
+        .correct { background-color: #dcfce7; border-color: #22c55e !important; }
+        .incorrect { background-color: #fee2e2; border-color: #ef4444 !important; }
+        
+        .frac { display: inline-block; vertical-align: middle; text-align: center; font-size: 0.9em; min-width: 30px; }
+        .frac > span { display: block; padding: 0.1em; }
+        .frac span.bottom { border-top: 2px solid black; }
+
+        html { scroll-behavior: smooth; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen font-sans pb-10">
+
+    <div class="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
+        
+        <div class="lg:col-span-1 space-y-6">
+            <div class="bg-white rounded-xl shadow-md p-6 sticky top-6">
+                <h2 class="text-xl font-bold text-blue-800 mb-4">Settings</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Level</label>
+                        <select id="levelSelect" onchange="updateTopics()" class="w-full border border-gray-300 rounded-md p-2 text-sm outline-none">
+                            <option value="3A">Level 3A (Adding 1-10)</option>
+                            <option value="2A">Level 2A (Adding 11-20)</option>
+                            <option value="A">Level A (Sub 1-20)</option>
+                            <option value="B">Level B (Vertical Add/Sub)</option>
+                            <option value="C">Level C (Multiplication)</option>
+                            <option value="D">Level D (Division & Frac Intro)</option>
+                            <option value="E">Level E (Mixed Frac +/-)</option>
+                            <option value="F" selected>Level F (Intermediate Fractions)</option>
+                            <option value="G">Level G (Pre-Algebra / Negatives)</option>
+                            <option value="H">Level H (Linear Equations)</option>
+                            <option value="I">Level I (Factorization / Quadratics)</option>
+                            <option value="J">Level J (Advanced Algebra)</option>
+                            <option value="K">Level K (Trigonometry)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Topic</label>
+                        <select id="topicSelect" class="w-full border border-gray-300 rounded-md p-2 text-sm outline-none">
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Quantity</label>
+                        <select id="problemCount" class="w-full border border-gray-300 rounded-md p-2 text-sm">
+                            <option value="10">10 Problems</option>
+                            <option value="20">20 Problems</option>
+                            <option value="40">40 Problems</option>
+                        </select>
+                    </div>
+                    <button onclick="generateWorksheet()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded transition shadow-md">
+                        Generate
+                    </button>
+                    <button id="checkBtn" onclick="checkAnswers()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 rounded transition shadow-md">
+                        Grade Now
+                    </button>
+                </div>
+
+                <div class="mt-8 pt-6 border-t border-gray-100">
+                    <h2 class="text-sm font-bold text-gray-800 mb-2">History</h2>
+                    <div id="userStatus" class="text-[9px] text-gray-400 font-mono mb-2 truncate">Connecting...</div>
+                    <div id="historyList" class="space-y-1 max-h-60 overflow-y-auto"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lg:col-span-3">
+            <header class="text-center mb-6">
+                <h1 class="text-4xl font-black text-slate-800 tracking-tight italic">K-STYLE MATH <span class="text-blue-600">GEN</span></h1>
+                <div id="scoreBanner" class="hidden mt-4 p-4 rounded-lg text-center font-bold text-xl text-white shadow-inner"></div>
+            </header>
+            <div id="pagesContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        const levelData = {
+            "3A": ["Adding 1-5", "Adding 6-10", "Missing Number Intro"],
+            "2A": ["Adding 11-20", "Sub 1-5", "Mixed Add/Sub"],
+            "A": ["Horizontal Sub 4-10", "Horizontal Sub 11-20", "Missing Numbers"],
+            "B": ["Vertical Addition (Carry)", "Vertical Subtraction (Borrow)", "3-Digit Logic"],
+            "C": ["Multiplication 2-9", "Mult 2-digit x 1-digit", "Basic Mental Division"],
+            "D": ["Long Division (2-digit)", "Fraction Reduction", "Improper to Mixed"],
+            "E": ["Fraction Add (Unlike Denom)", "Fraction Sub (Unlike Denom)", "Mixed Number Intro"],
+            "F": ["Simplify Fractions (Easy)", "Mixed Frac Mult (Small)", "Mixed Frac Div (Small)", "3-Frac Easy Ops"],
+            "G": ["Negative Combinations", "Multi-Step Negatives", "Basic Linear (x + a = b)"],
+            "H": ["Two-Step Linear (ax + b = c)", "Equations with Parentheses", "Simultaneous Equations"],
+            "I": ["Complex Factorization", "Quadratic Equations (Roots)"],
+            "J": ["Complex Expansion", "Irrational Equations"],
+            "K": ["Trig Identities", "Exponential Equations"]
+        };
+
+        function gcd(a, b) {
+            return b ? gcd(b, a % b) : a;
+        }
+
+        function simplify(num, den) {
+            let common = gcd(num, den);
+            return [num / common, den / common];
+        }
+
+        function toMixed(num, den) {
+            let whole = Math.floor(num / den);
+            let rem = num % den;
+            if (rem === 0) return whole.toString();
+            if (whole === 0) return `${rem}/${den}`;
+            return `${whole} ${rem}/${den}`;
+        }
+
+        function updateTopics() {
+            const level = document.getElementById('levelSelect').value;
+            const topicSelect = document.getElementById('topicSelect');
+            topicSelect.innerHTML = "";
+            levelData[level].forEach(topic => {
+                const opt = document.createElement('option');
+                opt.value = topic;
+                opt.innerText = topic;
+                topicSelect.appendChild(opt);
+            });
+        }
+
+        function getRandomInt(min, max) {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        function parseAnswer(str) {
+            str = str.trim().toLowerCase();
+            if (!str) return null;
+            
+            // Handle mixed numbers like "10 17/42"
+            if (str.includes(' ') && str.includes('/')) {
+                const parts = str.split(' ');
+                const whole = parseInt(parts[0]);
+                const fracParts = parts[1].split('/');
+                return whole + (parseInt(fracParts[0]) / parseInt(fracParts[1]));
+            }
+            // Handle pure fractions like "17/42"
+            if (str.includes('/')) {
+                const parts = str.split('/');
+                return parseInt(parts[0]) / parseInt(parts[1]);
+            }
+            // Handle decimals or integers
+            return parseFloat(str);
+        }
+
+        function createProblem(level, topic) {
+            let pText = "";
+            let answerStr = "";
+            
+            if (level === "F") {
+                if (topic.includes("Simplify")) {
+                    // Easier reduction problems
+                    let common = getRandomInt(2, 5);
+                    let n = getRandomInt(1, 4) * common;
+                    let d = getRandomInt(5, 8) * common;
+                    pText = `<div class="frac"><span>${n}</span><span class="bottom">${d}</span></div> = `;
+                    let [sn, sd] = simplify(n, d);
+                    answerStr = `${sn}/${sd}`;
+                } else if (topic.includes("Mult") || topic.includes("Div")) {
+                    // Smaller numbers to make reduction easy
+                    let w1 = getRandomInt(1, 2), n1 = getRandomInt(1, 3), d1 = getRandomInt(2, 5);
+                    let w2 = getRandomInt(1, 2), n2 = getRandomInt(1, 3), d2 = getRandomInt(2, 5);
+                    
+                    let num1 = w1 * d1 + n1;
+                    let num2 = w2 * d2 + n2;
+
+                    if (topic.includes("Mult")) {
+                        pText = `<span>${w1}</span><div class="frac"><span>${n1}</span><span class="bottom">${d1}</span></div> × <span>${w2}</span><div class="frac"><span>${n2}</span><span class="bottom">${d2}</span></div> = `;
+                        let [sNum, sDen] = simplify(num1 * num2, d1 * d2);
+                        answerStr = toMixed(sNum, sDen);
+                    } else {
+                        pText = `<span>${w1}</span><div class="frac"><span>${n1}</span><span class="bottom">${d1}</span></div> ÷ <span>${w2}</span><div class="frac"><span>${n2}</span><span class="bottom">${d2}</span></div> = `;
+                        let [sNum, sDen] = simplify(num1 * d2, d1 * num2);
+                        answerStr = toMixed(sNum, sDen);
+                    }
+                } else {
+                    // 3-Frac Easy
+                    let n1=1, d1=2, n2=1, d2=3, n3=1, d3=4;
+                    pText = `<div class="frac"><span>${n1}</span><span class="bottom">${d1}</span></div> + <div class="frac"><span>${n2}</span><span class="bottom">${d2}</span></div> - <div class="frac"><span>${n3}</span><span class="bottom">${d3}</span></div> = `;
+                    let [sn, sd] = simplify(7, 12);
+                    answerStr = `${sn}/${sd}`;
+                }
+            } 
+            else if (level === "G" || level === "H") {
+                let x = getRandomInt(-5, 5);
+                let a = getRandomInt(2, 4);
+                let b = getRandomInt(-10, 10);
+                pText = `<span>${a}x ${b >= 0 ? '+' : ''} ${b} = ${a * x + b}, x = </span>`;
+                answerStr = x.toString();
+            }
+            else if (["3A", "2A", "A", "B"].includes(level)) {
+                let n1 = getRandomInt(1, 10), n2 = getRandomInt(1, 10);
+                let op = (level === "A") ? "-" : "+";
+                pText = `<span>${n1} ${op} ${n2} = </span>`;
+                answerStr = op === "+" ? (n1 + n2).toString() : (n1 - n2).toString();
+            }
+            else {
+                let n1 = getRandomInt(2, 9), n2 = getRandomInt(2, 9);
+                pText = `<span>${n1} × ${n2} = </span>`;
+                answerStr = (n1 * n2).toString();
+            }
+
+            pText += `<input type="text" class="answer-input" data-ans="${answerStr}" placeholder="Answer">`;
+            return pText;
+        }
+
+        function generateWorksheet() {
+            const level = document.getElementById('levelSelect').value;
+            const topic = document.getElementById('topicSelect').value;
+            const totalCount = parseInt(document.getElementById('problemCount').value);
+            const pagesContainer = document.getElementById('pagesContainer');
+            const scoreBanner = document.getElementById('scoreBanner');
+            
+            scoreBanner.className = "hidden";
+            pagesContainer.innerHTML = "";
+            const problemsPerPage = 10;
+            const numPages = Math.ceil(totalCount / problemsPerPage);
+
+            for (let p = 0; p < numPages; p++) {
+                const pageDiv = document.createElement('div');
+                pageDiv.className = "worksheet-page bg-white shadow-xl p-[0.5in] min-h-[8in] mb-10 relative rounded-lg border border-slate-200";
+                pageDiv.innerHTML = `
+                    <div class="border-b-4 border-black pb-2 mb-6 flex justify-between items-end">
+                        <div>
+                            <h2 class="text-3xl font-black italic">Level ${level}</h2>
+                            <p class="text-[10px] font-bold uppercase tracking-widest mt-1 text-slate-500">${topic}</p>
+                        </div>
+                        <div class="text-right text-[10px] font-bold">
+                            <div class="mb-1">Name: ______________________</div>
+                            <div>Date: ____ / ____ / ____</div>
+                        </div>
+                    </div>
+                    <div class="worksheet-grid">
+                        ${Array.from({length: 10}, (_, i) => {
+                            const num = (p * 10) + i + 1;
+                            if (num > totalCount) return '';
+                            return `
+                                <div class="problem-item" id="item-${num}">
+                                    <span class="problem-num">(${i + 1})</span>
+                                    <div class="problem-content">${createProblem(level, topic)}</div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+                pagesContainer.appendChild(pageDiv);
+            }
+        }
+
+        function checkAnswers() {
+            const level = document.getElementById('levelSelect').value;
+            const topic = document.getElementById('topicSelect').value;
+            const inputs = document.querySelectorAll('.answer-input');
+            const banner = document.getElementById('scoreBanner');
+            let correctCount = 0;
+
+            inputs.forEach(input => {
+                const userRaw = input.value.trim();
+                const correctRaw = input.getAttribute('data-ans');
+                
+                const userVal = parseAnswer(userRaw);
+                const correctVal = parseAnswer(correctRaw);
+
+                const parent = input.closest('.problem-item');
+                
+                if (userRaw === correctRaw || (userVal !== null && Math.abs(userVal - correctVal) < 0.001)) {
+                    correctCount++;
+                    parent.classList.add('correct');
+                    parent.classList.remove('incorrect');
+                } else {
+                    parent.classList.add('incorrect');
+                    parent.classList.remove('correct');
+                }
+            });
+
+            const percent = Math.round((correctCount / inputs.length) * 100);
+            banner.innerText = `SCORE: ${correctCount} / ${inputs.length} (${percent}%)`;
+            banner.className = `block mb-4 p-4 rounded-lg text-center font-bold text-xl ${percent >= 80 ? 'bg-green-600' : 'bg-orange-500'}`;
+            if (window.saveResultToCloud) window.saveResultToCloud(level, topic, correctCount, inputs.length);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        updateTopics();
+        window.onload = generateWorksheet;
+    </script>
+</body>
+</html>
